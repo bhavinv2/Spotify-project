@@ -2,16 +2,17 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import time
 from flask import Flask, request, url_for, session, redirect
-from requests import get
+from requests import get, post
 import json
 import os
 from dotenv import load_dotenv
 import threading
+from collections import Counter
 
 app = Flask(__name__)
 
-app.config['SESSION_COOKIE_NAME'] = 'Spotify Cookie'
-app.secret_key = 'jbjvg7$shbsbsududbjs'
+app.config['SESSION_COOKIE_NAME'] = 'SpotifySession'
+app.secret_key = 'your_secret_key_here'  # Replace with a secure secret key
 TOKEN_INFO = 'token_info'
 
 load_dotenv()
@@ -37,7 +38,6 @@ def login():
 
 @app.route('/redirect')
 def redirect_page():
-    session.clear()
     code = request.args.get('code')
     token_info = create_spotify_oauth().get_access_token(code)
     session[TOKEN_INFO] = token_info
@@ -57,7 +57,7 @@ def home():
     # Start the terminal menu in a separate thread
     threading.Thread(target=main_menu, args=(token,)).start()
 
-    return "OAuth successful. Check terminal for menu."
+    return "✅✅✅✅OAuth successful. Check terminal for menu."
 
 
 def get_token():
@@ -141,8 +141,8 @@ def get_followed_artists(token):
         return None
 
 
-def get_user_playlists(token, user_id):
-    url = f"https://api.spotify.com/v1/users/{user_id}/playlists"
+def get_user_playlists(token):
+    url = "https://api.spotify.com/v1/me/playlists"
     headers = get_auth_header(token)
     result = get(url, headers=headers)
     if result.status_code == 200:
@@ -154,6 +154,47 @@ def get_user_playlists(token, user_id):
         return None
 
 
+def get_playlist_tracks(token, playlist_id):
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+    headers = get_auth_header(token)
+    result = get(url, headers=headers)
+    if result.status_code == 200:
+        json_result = json.loads(result.content).get("items", [])
+        return json_result
+    else:
+        print(f"Failed to get playlist tracks: {result.status_code}")
+        print(result.content)
+        return None
+
+
+def get_user_top_artists(token):
+    url = "https://api.spotify.com/v1/me/top/artists?limit=10"
+    headers = get_auth_header(token)
+    result = get(url, headers=headers)
+    if result.status_code == 200:
+        json_result = json.loads(result.content).get("items", [])
+        return json_result
+    else:
+        print(f"Failed to get top artists: {result.status_code}")
+        print(result.content)
+        return None
+
+
+def add_song_to_playlist(token, playlist_id, track_uri):
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+    headers = get_auth_header(token)
+    headers["Content-Type"] = "application/json"
+    data = json.dumps({"uris": [track_uri]})
+
+    result = post(url, headers=headers, data=data)
+
+    if result.status_code == 201:
+        print(f"Successfully added track to playlist {playlist_id}.")
+    else:
+        print(f"Failed to add track to playlist: {result.status_code}")
+        print(result.content)
+
+
 def view_top_songs(token):
     artist_name = input("Enter the artist name: ")
     result = search_for_artist(token, artist_name)
@@ -162,7 +203,28 @@ def view_top_songs(token):
         songs = get_songs_by_artist(token, artist_id)
         print(f"\nTop 10 songs by {artist_name}:\n")
         for idx, song in enumerate(songs):
-            print(f"{idx + 1}. {song['name']}")
+            print(f"{idx + 1}. {song['name']} - URI: {song['uri']}")
+
+        add_choice = input("Enter the number of the song to add to a playlist, or '0' to go back: ")
+        if add_choice.isdigit() and 1 <= int(add_choice) <= len(songs):
+            track_uri = songs[int(add_choice) - 1]['uri']
+            playlists = get_user_playlists(token)
+
+            if playlists:
+                print("\nYour Playlists:\n")
+                for idx, playlist in enumerate(playlists):
+                    print(f"{idx + 1}. {playlist['name']} (ID: {playlist['id']})")
+
+                playlist_choice = input("Enter the number of the playlist to add the song to, or '0' to go back: ")
+                if playlist_choice.isdigit() and 1 <= int(playlist_choice) <= len(playlists):
+                    selected_playlist_id = playlists[int(playlist_choice) - 1]['id']
+                    add_song_to_playlist(token, selected_playlist_id, track_uri)
+                else:
+                    print("Invalid choice. Returning to the main menu.")
+            else:
+                print("No playlists found.")
+        else:
+            print("Invalid choice. Returning to the main menu.")
     else:
         print(f"No information found for artist: {artist_name}")
 
@@ -170,12 +232,12 @@ def view_top_songs(token):
 def view_saved_tracks(token):
     saved_tracks = get_saved_tracks(token)
     if saved_tracks:
-        print("\nYour Saved Tracks (Top 20):\n")
+        print("\nYour Liked Tracks (Recent 20):\n")
         for idx, item in enumerate(saved_tracks):
             track = item['track']
             print(f"{idx + 1}. {track['name']} by {track['artists'][0]['name']}")
     else:
-        print("No saved tracks found.")
+        print("No liked tracks found.")
 
 
 def view_top_tracks(token):
@@ -199,25 +261,72 @@ def view_followed_artists(token):
 
 
 def view_user_playlists(token):
-    user_id = input("Enter your Spotify user ID: ")
-    user_playlists = get_user_playlists(token, user_id)
+    user_playlists = get_user_playlists(token)
     if user_playlists:
         print("\nYour Playlists:\n")
         for idx, playlist in enumerate(user_playlists):
             print(f"{idx + 1}. {playlist['name']} (Total tracks: {playlist['tracks']['total']})")
+
+        # Allow user to select a playlist to view its tracks
+        playlist_choice = input("Enter the number of the playlist to view its tracks, or '0' to go back: ")
+        if playlist_choice.isdigit() and 1 <= int(playlist_choice) <= len(user_playlists):
+            selected_playlist_id = user_playlists[int(playlist_choice) - 1]['id']
+            view_playlist_tracks(token, selected_playlist_id)
+        else:
+            print("Invalid choice. Returning to the main menu.")
     else:
         print("No playlists found.")
+
+
+def view_playlist_tracks(token, playlist_id):
+    playlist_tracks = get_playlist_tracks(token, playlist_id)
+    if playlist_tracks:
+        print("\nPlaylist Tracks:\n")
+        for idx, item in enumerate(playlist_tracks):
+            track = item['track']
+            print(f"{idx + 1}. {track['name']} by {track['artists'][0]['name']}")
+    else:
+        print("No tracks found in this playlist.")
+
+
+def view_top_artists(token):
+    top_artists = get_user_top_artists(token)
+    if top_artists:
+        print("\nYour Top 10 Artists:\n")
+        for idx, artist in enumerate(top_artists):
+            print(f"{idx + 1}. {artist['name']}")
+    else:
+        print("No top artists found.")
+
+
+def view_top_genres(token):
+    top_artists = get_user_top_artists(token)
+    if top_artists:
+        genre_counter = Counter()
+        for artist in top_artists:
+            genres = artist.get('genres', [])
+            genre_counter.update(genres)
+
+        top_genres = genre_counter.most_common()
+
+        print("\nYour Top Genres:\n")
+        for genre, count in top_genres:
+            print(f"{genre}: {count}")
+    else:
+        print("No top artists found to determine genres.")
 
 
 def main_menu(token):
     while True:
         print("\nMenu:")
         print("1. View top songs by artist")
-        print("2. View saved tracks")
+        print("2. View liked tracks")
         print("3. View top tracks")
         print("4. View followed artists")
         print("5. View user playlists")
-        print("6. Exit")
+        print("6. View top artists")
+        print("7. View top genres")
+        print("8. Exit")
         choice = input("Enter your choice: ")
 
         if choice == "1":
@@ -231,6 +340,10 @@ def main_menu(token):
         elif choice == "5":
             view_user_playlists(token)
         elif choice == "6":
+            view_top_artists(token)
+        elif choice == "7":
+            view_top_genres(token)
+        elif choice == "8":
             print("Exiting the program.")
             break
         else:
