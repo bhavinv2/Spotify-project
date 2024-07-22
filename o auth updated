@@ -5,6 +5,7 @@ from flask import Flask, request, url_for, session, redirect
 from requests import get, post
 import json
 import os
+import csv
 from dotenv import load_dotenv
 import threading
 from collections import Counter
@@ -41,6 +42,16 @@ def redirect_page():
     code = request.args.get('code')
     token_info = create_spotify_oauth().get_access_token(code)
     session[TOKEN_INFO] = token_info
+
+    token = token_info['access_token']
+    headers = get_auth_header(token)
+    user_profile_response = get("https://api.spotify.com/v1/me", headers=headers)
+    user_profile = json.loads(user_profile_response.content)
+    session['user_id'] = user_profile['id']
+
+    # Store user ID in CSV
+    store_user_id_csv(user_profile['id'])
+
     return redirect(url_for('home', _external=True))
 
 
@@ -77,6 +88,15 @@ def get_token():
 
 def get_auth_header(token):
     return {"Authorization": "Bearer " + token}
+
+
+def store_user_id_csv(user_id):
+    file_exists = os.path.isfile('user_ids.csv')
+    with open('user_ids.csv', mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(['User ID'])
+        writer.writerow([user_id])
 
 
 def search_for_artist(token, artist_name):
@@ -247,73 +267,55 @@ def view_top_tracks(token):
         for idx, track in enumerate(user_top_tracks):
             print(f"{idx + 1}. {track['name']} by {track['artists'][0]['name']}")
     else:
-        print("Failed to retrieve user's top tracks")
+        print("Could not retrieve user's top tracks.")
 
 
 def view_followed_artists(token):
     followed_artists = get_followed_artists(token)
-    if followed_artists:
-        print("\nYour Followed Artists:\n")
+    if followed_artists is not None:
+        print("Followed Artists:")
         for idx, artist in enumerate(followed_artists):
             print(f"{idx + 1}. {artist['name']}")
     else:
-        print("No followed artists found.")
+        print("Could not retrieve followed artists.")
 
 
 def view_user_playlists(token):
     user_playlists = get_user_playlists(token)
-    if user_playlists:
-        print("\nYour Playlists:\n")
+    if user_playlists is not None:
+        print("User's Playlists:")
         for idx, playlist in enumerate(user_playlists):
-            print(f"{idx + 1}. {playlist['name']} (Total tracks: {playlist['tracks']['total']})")
-
-        # Allow user to select a playlist to view its tracks
-        playlist_choice = input("Enter the number of the playlist to view its tracks, or '0' to go back: ")
-        if playlist_choice.isdigit() and 1 <= int(playlist_choice) <= len(user_playlists):
-            selected_playlist_id = user_playlists[int(playlist_choice) - 1]['id']
-            view_playlist_tracks(token, selected_playlist_id)
-        else:
-            print("Invalid choice. Returning to the main menu.")
+            print(f"{idx + 1}. {playlist['name']}")
     else:
-        print("No playlists found.")
-
-
-def view_playlist_tracks(token, playlist_id):
-    playlist_tracks = get_playlist_tracks(token, playlist_id)
-    if playlist_tracks:
-        print("\nPlaylist Tracks:\n")
-        for idx, item in enumerate(playlist_tracks):
-            track = item['track']
-            print(f"{idx + 1}. {track['name']} by {track['artists'][0]['name']}")
-    else:
-        print("No tracks found in this playlist.")
+        print("Could not retrieve user's playlists.")
 
 
 def view_top_artists(token):
     top_artists = get_user_top_artists(token)
-    if top_artists:
-        print("\nYour Top 10 Artists:\n")
+    if top_artists is not None:
+        print("Top Artists:")
         for idx, artist in enumerate(top_artists):
             print(f"{idx + 1}. {artist['name']}")
     else:
-        print("No top artists found.")
+        print("Could not retrieve top artists.")
 
 
 def view_top_genres(token):
-    top_artists = get_user_top_artists(token)
-    if top_artists:
-        genre_counter = Counter()
-        for artist in top_artists:
-            genres = artist.get('genres', [])
-            genre_counter.update(genres)
+    top_tracks = get_user_top_tracks(token)
+    if top_tracks is not None:
+        genres = []
+        for track in top_tracks:
+            artist_id = track['artists'][0]['id']
+            artist = search_for_artist(token, artist_id)
+            if artist:
+                genres.extend(artist.get('genres', []))
 
-        top_genres = genre_counter.most_common()
-
-        print("\nYour Top Genres:\n")
-        for genre, count in top_genres:
+        genre_counts = Counter(genres)
+        print("Top Genres:")
+        for genre, count in genre_counts.most_common():
             print(f"{genre}: {count}")
     else:
-        print("No top artists found to determine genres.")
+        print("Could not retrieve top tracks to determine genres.")
 
 
 def main_menu(token):
