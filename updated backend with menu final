@@ -9,6 +9,11 @@ import csv
 from dotenv import load_dotenv
 import threading
 from collections import Counter
+from google.cloud import bigquery
+
+project_id = "elite-air-423414-h9"
+dataset_id = "spotify_login"
+table_id = "login"
 
 app = Flask(__name__)
 
@@ -38,6 +43,25 @@ def login():
 
 
 @app.route('/redirect')
+def check_username_in_bigquery(user_id):
+    try:
+        client = bigquery.Client()
+        query = f"""
+            SELECT username
+            FROM `{dataset_id}.{table_id}`
+            WHERE username = '{user_id}'
+            LIMIT 1
+        """
+        query_job = client.query(query)
+        results = query_job.result()
+        
+        for row in results:
+            return True  
+        return False  
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        return False
+
 def redirect_page():
     code = request.args.get('code')
     token_info = create_spotify_oauth().get_access_token(code)
@@ -49,10 +73,9 @@ def redirect_page():
     user_profile = json.loads(user_profile_response.content)
     session['user_id'] = user_profile['id']
 
-    # Store user ID in CSV
-    store_user_id_csv(user_profile['id'])
-
-    return redirect(url_for('home', _external=True))
+    if not check_username_in_bigquery(user_profile['id']):
+        insert_username_into_bigquery(user_profile['id'])
+        return redirect(url_for('home', _external=True))
 
 
 @app.route('/home')
@@ -90,13 +113,28 @@ def get_auth_header(token):
     return {"Authorization": "Bearer " + token}
 
 
-def store_user_id_csv(user_id):
-    file_exists = os.path.isfile('user_ids.csv')
-    with open('user_ids.csv', mode='a', newline='') as file:
-        writer = csv.writer(file)
-        if not file_exists:
-            writer.writerow(['User ID'])
-        writer.writerow([user_id])
+from google.cloud import bigquery
+import logging
+
+def insert_username_into_bigquery(username):
+    try:
+        client = bigquery.Client()
+        table_ref = client.dataset(dataset_id).table(table_id)
+        table = client.get_table(table_ref)
+        
+        rows_to_insert = [
+            {u"username": username}
+        ]
+        errors = client.insert_rows_json(table, rows_to_insert)
+        if errors == []:
+            return "New row has been added."
+        else:
+            logging.error(f"Error: {errors}")
+            return f"Encountered errors while inserting rows: {errors}"
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        return str(e)
+
 
 
 def search_for_artist(token, artist_name):
